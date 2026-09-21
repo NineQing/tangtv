@@ -24,7 +24,6 @@ import com.fongmi.android.tv.utils.Github;
 import com.fongmi.android.tv.utils.Notify;
 import com.fongmi.android.tv.utils.ResUtil;
 import com.fongmi.android.tv.utils.Task;
-import com.fongmi.android.tv.update.GithubProxy;
 import com.fongmi.android.tv.update.HttpUpdateTransfer;
 import com.fongmi.android.tv.update.OciArtifact;
 import com.fongmi.android.tv.update.OciMirror;
@@ -33,6 +32,7 @@ import com.fongmi.android.tv.update.UpdateHttp;
 import com.fongmi.android.tv.update.UpdateRoutePlanner;
 import com.fongmi.android.tv.update.UpdateTarget;
 import com.fongmi.android.tv.update.UpdateTransfer;
+import com.fongmi.android.tv.utils.GithubProxy;
 import com.github.catvod.utils.Path;
 
 import org.json.JSONArray;
@@ -51,6 +51,7 @@ import java.util.Set;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.ArrayList;
 
 public class Updater implements UpdateTransfer.Callback, UpdateListener {
 
@@ -169,14 +170,12 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
 
     private Update getUpdate(String channel) {
         String manifestName = getManifestName(channel);
-        Update update = readUpdate(channel, Github.getChannelAsset(manifestName), SOURCE_GITHUB);
+        Update cnb = readUpdate(channel, Github.getCnbMirrorAsset(manifestName), SOURCE_CNB, GITHUB_API_HEADERS, null);
+        if (cnb.hasManifest()) return cnb;
+        Update update = readUpdate(channel, Github.getChannelAsset(manifestName), SOURCE_GITHUB, GITHUB_API_HEADERS, null);
         if (update.hasManifest()) return update;
-        if (Update.CHANNEL_BETA.equals(channel)) {
-            update = readUpdate(channel, Github.getCnbMirrorAsset(manifestName), SOURCE_CNB);
-            if (update.hasManifest()) return update;
-            return getGithubBetaUpdate(channel);
-        }
-        update = readUpdate(channel, Github.getGithubLatestAsset(manifestName), SOURCE_GITHUB);
+        if (Update.CHANNEL_BETA.equals(channel)) return getGithubBetaUpdate(channel);
+        update = readUpdate(channel, Github.getGithubLatestAsset(manifestName), SOURCE_GITHUB, GITHUB_API_HEADERS, null);
         if (update.hasManifest()) return update;
         return getGithubStableUpdate(channel);
     }
@@ -240,7 +239,8 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
     private Update readUpdate(String channel, String manifestUrl, String source, Map<String, String> headers, String fallbackNotes) {
         Update update = Update.empty(channel);
         try {
-            String proxiedUrl = com.fongmi.android.tv.utils.GithubProxy.apply(manifestUrl);
+            GithubProxy.Config config = GithubProxy.config();
+            String proxiedUrl = config.rewrite(manifestUrl);
             String text = UpdateHttp.string(proxiedUrl, headers, GITHUB_REQUEST_TIMEOUT_MS);
             if (TextUtils.isEmpty(text)) throw new IllegalStateException("Empty update manifest: " + manifestUrl);
             JSONObject object = new JSONObject(text);
@@ -276,6 +276,10 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
         update.githubUrl = github == null ? "" : github.optString("url");
         if (TextUtils.isEmpty(update.githubUrl)) update.githubUrl = getGithubApkUrl(update);
         update.apkUrl = update.githubUrl;
+        String apkField = update.apk;
+        if (apkField != null && apkField.startsWith("https://cnb.cool/")) {
+            update.apkUrl = apkField;
+        }
         JSONObject oci = downloads == null ? null : downloads.optJSONObject("oci");
         if (oci == null) return;
         OciArtifact artifact = new OciArtifact(
@@ -347,7 +351,9 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
 
     private String readReleaseNotes(String tag) {
         try {
-            return new JSONObject(UpdateHttp.string(com.fongmi.android.tv.utils.GithubProxy.apply(Github.getReleaseApi(tag)), GITHUB_API_HEADERS, GITHUB_REQUEST_TIMEOUT_MS)).optString("body");
+            GithubProxy.Config config = GithubProxy.config();
+            String proxiedUrl = config.rewrite(Github.getReleaseApi(tag));
+            return new JSONObject(UpdateHttp.string(proxiedUrl, GITHUB_API_HEADERS, GITHUB_REQUEST_TIMEOUT_MS)).optString("body");
         } catch (Exception ignored) {
             return "";
         }
@@ -381,14 +387,21 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
         FragmentActivity activity = activityRef == null ? null : activityRef.get();
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
 
-        new com.google.android.material.dialog.MaterialAlertDialogBuilder(activity, R.style.ThemeOverlay_WebHTV_LightDialog)
+        androidx.appcompat.app.AlertDialog alert = new com.google.android.material.dialog.MaterialAlertDialogBuilder(activity, R.style.ThemeOverlay_WebHTV_LightDialog)
                 .setTitle(R.string.update_backup_title)
                 .setMessage(R.string.update_backup_message)
                 .setPositiveButton(R.string.update_backup_positive, (dialog, which) -> startBackupAndUpdate(view))
                 .setNegativeButton(R.string.update_backup_negative, (dialog, which) -> startUpdate(view))
                 .setNeutralButton(R.string.dialog_negative, (dialog, which) -> view.setEnabled(true))
                 .setCancelable(false)
-                .show();
+                .create();
+        alert.setOnShowListener(dialog -> {
+            View buttonPanel = alert.findViewById(com.google.android.material.R.id.buttonPanel);
+            if (buttonPanel != null) buttonPanel.setFocusable(false);
+            View positive = alert.getButton(android.content.DialogInterface.BUTTON_POSITIVE);
+            if (positive != null) positive.requestFocus();
+        });
+        alert.show();
     }
 
     private void startBackupAndUpdate(View view) {
@@ -434,9 +447,15 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
 
     private List<UpdateTarget> getRoutes(Update update) {
         try {
-            GithubProxy.Config github = GithubProxy.resolve(Setting.getUpdateGithubProxy(), Setting.getUpdateGithubProxyUrl(), Setting.getUpdateGithubProxyMode());
+            GithubProxy.Config github = GithubProxy.config();
             String endpoint = update.oci == null ? "" : OciMirror.resolve(Setting.getUpdateOciMirror(), Setting.getUpdateOciMirrorUrl(), update.oci);
-            return UpdateRoutePlanner.plan(Setting.getUpdateSource(), update.githubUrl, update.oci, github, endpoint);
+            List<UpdateTarget> routes = new ArrayList<>();
+            String cnbUrl = update.apkUrl;
+            if (cnbUrl != null && cnbUrl.startsWith("https://cnb.cool/")) {
+                routes.add(UpdateTarget.github(cnbUrl));
+            }
+                        routes.addAll(UpdateRoutePlanner.plan(Setting.getUpdateSource(), update.apkUrl, update.oci, github, endpoint));
+            return routes;
         } catch (Exception e) {
             return List.of();
         }

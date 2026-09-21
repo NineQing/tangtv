@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat;
 
 import com.fongmi.android.tv.App;
 import com.fongmi.android.tv.BuildConfig;
+import com.fongmi.android.tv.api.config.VodConfig;
 import com.fongmi.android.tv.bean.AiConfig;
 import com.fongmi.android.tv.bean.AudioConfig;
 import com.fongmi.android.tv.bean.DanmakuMatchCache;
@@ -26,14 +27,16 @@ import com.fongmi.android.tv.bean.TmdbMatchCache;
 import com.fongmi.android.tv.bean.TmdbSeasonMatchCache;
 import com.fongmi.android.tv.bean.Update;
 import com.fongmi.android.tv.utils.AppCache;
-import com.fongmi.android.tv.update.GithubProxy;
 import com.fongmi.android.tv.update.OciMirror;
 import com.fongmi.android.tv.update.UpdateSource;
+import com.fongmi.android.tv.utils.GithubProxy;
 import com.fongmi.android.tv.utils.WebViewUtil;
+import com.fongmi.android.tv.utils.Util;
 import com.github.catvod.crawler.DebugLogStore;
 import com.github.catvod.crawler.SpiderDebug;
 import com.github.catvod.utils.Trans;
 import com.github.catvod.utils.Prefers;
+import com.google.gson.JsonObject;
 import com.google.gson.reflect.TypeToken;
 
 import java.lang.reflect.Type;
@@ -75,6 +78,9 @@ public class Setting {
     public static final int INTRO_SKIP_OFF = 0;
     public static final int INTRO_SKIP_AUTO = 1;
     public static final int INTRO_SKIP_CONFIRM = 2;
+    public static final int INTERFACE_FAILOVER_OFF = InterfaceFailoverPolicy.OFF;
+    public static final int INTERFACE_FAILOVER_AUTO = InterfaceFailoverPolicy.AUTO;
+    public static final int INTERFACE_FAILOVER_CONFIRM = InterfaceFailoverPolicy.CONFIRM;
     public static final int INTRO_SKIP_KIND_RECAP = 1;
     public static final int INTRO_SKIP_KIND_INTRO = 1 << 1;
     public static final int INTRO_SKIP_KIND_OUTRO = 1 << 2;
@@ -100,7 +106,10 @@ public class Setting {
     public static final int UI_SCALE_SMALLER = 3;
     public static final int UI_SCALE_MILD_COMPACT = 4;
     public static final int UI_SCALE_MORE_COMPACT = 5;
-    private static final int[] UI_SCALE_OPTIONS = {UI_SCALE_FOLLOW_SYSTEM, UI_SCALE_STANDARD, UI_SCALE_MILD_COMPACT, UI_SCALE_COMPACT, UI_SCALE_MORE_COMPACT, UI_SCALE_SMALLER};
+    public static final int UI_SCALE_LARGE = 6;
+    public static final int UI_SCALE_LARGER = 7;
+    public static final int UI_SCALE_LARGEST = 8;
+    private static final int[] UI_SCALE_OPTIONS = {UI_SCALE_FOLLOW_SYSTEM, UI_SCALE_SMALLER, UI_SCALE_MORE_COMPACT, UI_SCALE_COMPACT, UI_SCALE_MILD_COMPACT, UI_SCALE_STANDARD, UI_SCALE_LARGE, UI_SCALE_LARGER, UI_SCALE_LARGEST};
 
     public static final int WALL_CINEMA = 5;
     public static final int WALL_CINEMA_WARM = 6;
@@ -135,8 +144,11 @@ public class Setting {
     public static final int WALL_CYAN_CRYSTAL = 35;
     public static final int WALL_LAVENDER_CRYSTAL = 36;
     public static final int WALL_GREEN = 1;
+    public static final int WALL_CLASSIC_2 = 2;   // 经典内置壁纸 wallpaper_2
+    public static final int WALL_CLASSIC_3 = 3;   // 经典内置壁纸 wallpaper_3
 
-    private static final int[] DEFAULT_WALLS = {
+    // 设计壁纸（10..36）保持原有顺序与功能不变
+    private static final int[] DESIGN_WALLS = {
             WALL_DREAM_PURPLE, WALL_LAVENDER_CRYSTAL, WALL_PASTEL_PRISM, WALL_ROSE_VEIL, WALL_VIOLET_SMOKE,
             WALL_NEON_BERRY, WALL_MIDNIGHT_MOON, WALL_NEON_CYBER, WALL_DEEP_SPACE_GLASS, WALL_GRAPHITE_SMOKE,
             WALL_DAYLIGHT_MINIMAL, WALL_SKY_MINT, WALL_POLAR_LIGHT_GLASS, WALL_GLASS_GRADIENT, WALL_CRYSTAL_SKY,
@@ -144,6 +156,18 @@ public class Setting {
             WALL_LIQUID_CHROME, WALL_FOREST_MIST, WALL_EMERALD_AURORA, WALL_WARM_MOON_GLASS, WALL_PEACH_DAWN,
             WALL_CHAMPAGNE_MIST, WALL_SUNSET_PRISM
     };
+
+    // 默认内置壁纸：经典 wallpaper_1/2/3 置顶（顺序按 TV/手机 flavor 由 WallFlavor 提供），其后保留全部设计壁纸
+    private static final int[] DEFAULT_WALLS = buildDefaultWalls();
+
+    private static int[] buildDefaultWalls() {
+        int[] classic = WallFlavor.classicIds();
+        int[] design = DESIGN_WALLS;
+        int[] all = new int[classic.length + design.length];
+        System.arraycopy(classic, 0, all, 0, classic.length);
+        System.arraycopy(design, 0, all, classic.length, design.length);
+        return all;
+    }
 
     public static String getDoh() {
         return Prefers.getString("doh");
@@ -202,8 +226,9 @@ public class Setting {
     }
 
     public static int getWall() {
-        int wall = Prefers.getInt("wall", WALL_DREAM_PURPLE);
-        return wall == WALL_GREEN || isLegacyColorWall(wall) ? WALL_DREAM_PURPLE : wall;
+        // 初始安装默认显示经典壁纸 wallpaper_1（WALL_GREEN）；仅旧版纯色壁纸(5..9)回退到梦幻紫霞
+        int wall = Prefers.getInt("wall", WALL_GREEN);
+        return isLegacyColorWall(wall) ? WALL_DREAM_PURPLE : wall;
     }
 
     public static void putWall(int wall) {
@@ -254,6 +279,9 @@ public class Setting {
     }
 
     public static int getBuiltInWallColor(int wall) {
+        if (wall == WALL_GREEN) return 0xFF40C090;
+        if (wall == WALL_CLASSIC_2) return 0xFF6A6BD8;
+        if (wall == WALL_CLASSIC_3) return 0xFF5E97B0;
         if (wall == WALL_AURORA_GLASS) return 0xFF2B8ECB;
         if (wall == WALL_SUNSET_PRISM) return 0xFFB65B88;
         if (wall == WALL_MINT_GLACIER) return 0xFF55BCA8;
@@ -285,6 +313,9 @@ public class Setting {
     }
 
     public static String getBuiltInWallName(int wall) {
+        if (wall == WALL_GREEN) return "翠绿晨光";
+        if (wall == WALL_CLASSIC_2) return "紫蓝渐变";
+        if (wall == WALL_CLASSIC_3) return "梦幻光斑";
         if (wall == WALL_AURORA_GLASS) return "蓝紫流光";
         if (wall == WALL_SUNSET_PRISM) return "珊瑚暮色";
         if (wall == WALL_MINT_GLACIER) return "薄荷星云";
@@ -391,6 +422,14 @@ public class Setting {
         Prefers.put("incognito", incognito);
     }
 
+    public static boolean isTouchOptimized() {
+        return Util.isLeanback() && Prefers.getBoolean("touch_optimized");
+    }
+
+    public static void putTouchOptimized(boolean enabled) {
+        Prefers.put("touch_optimized", enabled);
+    }
+
     public static int getLanguage() {
         int language = Prefers.getInt("language", LANGUAGE_FOLLOW_SYSTEM);
         return isLanguage(language) ? language : LANGUAGE_FOLLOW_SYSTEM;
@@ -473,8 +512,11 @@ public class Setting {
         float factor = getUiScaleFactor(scale);
         Configuration config = new Configuration(context.getResources().getConfiguration());
         DisplayMetrics metrics = context.getResources().getDisplayMetrics();
-        int stableDensity = DisplayMetrics.DENSITY_DEVICE_STABLE > 0 ? DisplayMetrics.DENSITY_DEVICE_STABLE : metrics.densityDpi;
-        int densityDpi = Math.max(DisplayMetrics.DENSITY_LOW, Math.round(stableDensity * factor));
+        // Scale from the density currently selected by the system. Using the device's
+        // stable density makes the same option behave differently on phones, head units
+        // and virtual machines whose default display size overrides the stable density.
+        int baseDensity = metrics.densityDpi;
+        int densityDpi = Math.max(DisplayMetrics.DENSITY_LOW, Math.round(baseDensity * factor));
         config.densityDpi = densityDpi;
         config.fontScale = 1.0f;
         config.screenWidthDp = pxToDp(metrics.widthPixels, densityDpi);
@@ -483,13 +525,16 @@ public class Setting {
         return context.createConfigurationContext(config);
     }
 
-    private static float getUiScaleFactor(int scale) {
+    public static float getUiScaleFactor(int scale) {
         return switch (scale) {
-            case UI_SCALE_STANDARD -> 0.8f;
-            case UI_SCALE_MILD_COMPACT -> 0.75f;
-            case UI_SCALE_COMPACT -> 0.7f;
-            case UI_SCALE_MORE_COMPACT -> 0.65f;
-            case UI_SCALE_SMALLER -> 0.6f;
+            case UI_SCALE_SMALLER -> 0.8f;
+            case UI_SCALE_MORE_COMPACT -> 0.85f;
+            case UI_SCALE_COMPACT -> 0.9f;
+            case UI_SCALE_MILD_COMPACT -> 0.95f;
+            case UI_SCALE_STANDARD -> 1.0f;
+            case UI_SCALE_LARGE -> 1.1f;
+            case UI_SCALE_LARGER -> 1.2f;
+            case UI_SCALE_LARGEST -> 1.3f;
             default -> 1.0f;
         };
     }
@@ -656,6 +701,20 @@ public class Setting {
 
     public static void logDebugEnvironment(String reason) {
         boolean hardwareAccelerated = (App.get().getApplicationInfo().flags & ApplicationInfo.FLAG_HARDWARE_ACCELERATED) != 0;
+        DebugLogStore.event(new com.github.catvod.crawler.diagnostics.DiagnosticEvent("env.device", "none", "process", 0, 0)
+                .observed("reason", reason).observed("appVersion", BuildConfig.VERSION_NAME).observed("versionCode", BuildConfig.VERSION_CODE)
+                .observed("buildTime", BuildConfig.BUILD_TIME).observed("buildTag", BuildConfig.BUILD_TAG)
+                .observed("gitRevision", BuildConfig.GIT_REVISION).observed("state", BuildConfig.GIT_STATE)
+                .observed("fingerprintDigest", com.fongmi.android.tv.player.NativeLibraryDiagnostics.digestText(Build.FINGERPRINT))
+                .observed("media3Version", BuildConfig.MEDIA3_VERSION).observed("flavor", BuildConfig.FLAVOR_mode)
+                .observed("abi", BuildConfig.FLAVOR_abi).observed("process64Bit", android.os.Process.is64Bit())
+                .observed("android", Build.VERSION.RELEASE).observed("api", Build.VERSION.SDK_INT)
+                .observed("targetSdk", App.get().getApplicationInfo().targetSdkVersion)
+                .observed("manufacturer", Build.MANUFACTURER).observed("model", Build.MODEL)
+                .observed("device", Build.DEVICE).observed("hardwareAccelerated", hardwareAccelerated)
+                .pin("device"));
+        com.fongmi.android.tv.player.NativeLibraryDiagnostics.request();
+        com.fongmi.android.tv.player.PlaybackDiagnosticSession.captureActive(android.os.SystemClock.elapsedRealtime());
         SpiderDebug.log("env", "reason=%s app=%s(%s) mode=%s abi=%s debug=%s hardware=%s android=%s sdk=%s incremental=%s manufacturer=%s brand=%s model=%s device=%s product=%s supportedAbis=%s",
                 reason,
                 BuildConfig.VERSION_NAME,
@@ -735,30 +794,6 @@ public class Setting {
         Prefers.put("update_source", UpdateSource.normalize(source));
     }
 
-    public static String getUpdateGithubProxy() {
-        return GithubProxy.find(Prefers.getString("update_github_proxy", GithubProxy.DIRECT)).id;
-    }
-
-    public static void putUpdateGithubProxy(String proxy) {
-        Prefers.put("update_github_proxy", GithubProxy.find(proxy).id);
-    }
-
-    public static String getUpdateGithubProxyUrl() {
-        return Prefers.getString("update_github_proxy_url");
-    }
-
-    public static void putUpdateGithubProxyUrl(String url) {
-        Prefers.put("update_github_proxy_url", url == null ? "" : url.trim());
-    }
-
-    public static String getUpdateGithubProxyMode() {
-        return GithubProxy.normalizeMode(Prefers.getString("update_github_proxy_mode", GithubProxy.MODE_FULL_URL));
-    }
-
-    public static void putUpdateGithubProxyMode(String mode) {
-        Prefers.put("update_github_proxy_mode", GithubProxy.normalizeMode(mode));
-    }
-
     public static String getUpdateOciMirror() {
         return OciMirror.find(Prefers.getString("update_oci_mirror", OciMirror.DEFAULT)).id;
     }
@@ -776,6 +811,7 @@ public class Setting {
     }
 
     public static String getGithubProxy() {
+        migrateLegacyGithubProxy();
         return Prefers.getString("github_proxy", com.fongmi.android.tv.utils.GithubProxy.defaultSources());
     }
 
@@ -783,6 +819,14 @@ public class Setting {
         Prefers.put("github_proxy", com.fongmi.android.tv.utils.GithubProxy.normalizeConfig(value));
     }
 
+    public static String getGithubProxyMode() {
+        migrateLegacyGithubProxy();
+        return GithubProxy.normalizeMode(Prefers.getString("github_proxy_mode", GithubProxy.MODE_FULL_URL));
+    }
+
+    public static void putGithubProxyMode(String mode) {
+        Prefers.put("github_proxy_mode", GithubProxy.normalizeMode(mode));
+    }
 
     public static boolean isGithubProxyEnabled() {
         return Prefers.getBoolean("github_proxy_enabled", true);
@@ -790,6 +834,66 @@ public class Setting {
 
     public static void putGithubProxyEnabled(boolean enabled) {
         Prefers.put("github_proxy_enabled", enabled);
+    }
+
+    /**
+     * 把旧的单选 GitHub 代理设置迁移成新的多源列表。
+     *
+     * <p>{@code synchronized}：两个 getter 都会调它，而它先读后删旧键。不加锁时
+     * 「关于」对话框与探测线程可能同时进来，两边都看到旧键存在，后写的 {@code putGithubProxy}
+     * 会盖掉前一次已经扩好的列表。窗口只有升级后第一次读，但那正是唯一一次机会。
+     */
+    private static synchronized void migrateLegacyGithubProxy() {
+        if (!Prefers.getPrefers().contains("update_github_proxy")) return;
+
+        String proxy = Prefers.getString("update_github_proxy");
+        if (GithubProxy.DIRECT.equals(proxy)) {
+            putGithubProxyEnabled(false);
+        } else {
+            String url = "custom".equals(proxy)
+                    ? Prefers.getString("update_github_proxy_url")
+                    : legacyGithubProxyUrl(proxy);
+            if (!url.isEmpty()) {
+                // 旧选择成为列表首位（即生效源），其余内置源保留在后面备用。
+                // 先前这里用 putGithubProxy(url) 覆盖，会把刚合并出来的整份列表抹成一条。
+                String merged = GithubProxy.addSources(Prefers.getString("github_proxy"), legacyGithubProxySources(url));
+                putGithubProxy(GithubProxy.addSources(url, merged));
+                putGithubProxyEnabled(true);
+                putGithubProxyMode(Prefers.getString("update_github_proxy_mode", GithubProxy.MODE_FULL_URL));
+            }
+        }
+
+        Prefers.remove("update_github_proxy");
+        Prefers.remove("update_github_proxy_url");
+        Prefers.remove("update_github_proxy_mode");
+    }
+
+    private static String legacyGithubProxyUrl(String proxy) {
+        return switch (proxy) {
+            case "github_chenc" -> "https://github.chenc.dev";
+            case "gh_acmsz" -> "https://gh.acmsz.top";
+            case "ghfast" -> "https://ghfast.top";
+            case "gh_monlor" -> "https://gh.monlor.com";
+            default -> "";
+        };
+    }
+
+    /**
+     * 旧版本内置的四个代理加上用户自填的那个，作为迁移时要并入的候选源。
+     *
+     * <p>{@code selectedUrl} 放在最前：并入后它就是生效源，与用户升级前的选择一致。
+     * 自填地址无论当时选没选中都保留 —— 它是用户手输的，丢掉就再也找不回来。
+     */
+    private static String legacyGithubProxySources(String selectedUrl) {
+        List<String> list = new ArrayList<>();
+        if (selectedUrl != null && !selectedUrl.isEmpty()) list.add(selectedUrl);
+        list.add("https://github.chenc.dev");
+        list.add("https://gh.acmsz.top");
+        list.add("https://ghfast.top");
+        list.add("https://gh.monlor.com");
+        String custom = Prefers.getString("update_github_proxy_url");
+        if (!custom.isEmpty()) list.add(custom);
+        return String.join("\n", list);
     }
 
     public static boolean isAdblock() {
@@ -1072,6 +1176,10 @@ public class Setting {
         return isTmdbMode(getDetailOpenMode()) && getTmdbModel() == TMDB_MODEL_NATIVE && TmdbConfig.objectFrom(getTmdbConfig()).isReady();
     }
 
+    public static boolean isTmdbDetailModeConfigured() {
+        return isTmdbMode(getDetailOpenMode()) && getTmdbModel() == TMDB_MODEL_NATIVE;
+    }
+
     public static int getDetailOpenMode() {
         int mode;
         if (Prefers.getPrefers().contains("detail_open_mode")) {
@@ -1093,7 +1201,7 @@ public class Setting {
             mode = isTmdbEnabled() ? DETAIL_OPEN_ORIGINAL_ENHANCED : DETAIL_OPEN_DIRECT;
             migrateCurrentDetailTheme(mode);
         }
-        return isTmdbMode(mode) && !isTmdbReady() ? DETAIL_OPEN_DIRECT : mode;
+        return mode;
     }
 
     public static void putDetailOpenMode(int mode) {
@@ -1251,6 +1359,16 @@ public class Setting {
         Prefers.put("global_history_mode", clampGlobalHistoryMode(mode));
     }
 
+    public static int getInterfaceFailoverMode() {
+        return InterfaceFailoverPolicy.clampMode(Prefers.getInt("interface_failover_mode", InterfaceFailoverPolicy.DEFAULT_MODE));
+    }
+
+    public static void putInterfaceFailoverMode(int mode) {
+        int value = InterfaceFailoverPolicy.clampMode(mode);
+        Prefers.put("interface_failover_mode", value);
+        if (value == InterfaceFailoverPolicy.OFF) VodConfig.cancelFailover();
+    }
+
     public static boolean isGlobalHistoryEnabled() {
         return getGlobalHistoryMode() != GLOBAL_HISTORY_OFF;
     }
@@ -1328,14 +1446,21 @@ public class Setting {
         Prefers.put("play_back_to_detail", backToDetail);
     }
 
-    public static boolean isSubtitleAutoMatchEnabled() {
-        return Prefers.getBoolean("subtitle_auto_match", false);
-    }
+   public static boolean isSubtitleAutoMatchEnabled() {
+       return Prefers.getBoolean("subtitle_auto_match", false);
+   }
 
-    public static void putSubtitleAutoMatchEnabled(boolean enabled) {
-        Prefers.put("subtitle_auto_match", enabled);
-    }
+   public static void putSubtitleAutoMatchEnabled(boolean enabled) {
+       Prefers.put("subtitle_auto_match", enabled);
+   }
 
+   public static boolean isPlaybackOverlayEnabled() {
+       return Prefers.getBoolean("playback_overlay_enabled", true);
+   }
+
+   public static void putPlaybackOverlayEnabled(boolean enabled) {
+       Prefers.put("playback_overlay_enabled", enabled);
+   }
     public static String getSubtitlePreferredLanguage() {
         return Prefers.getString("subtitle_preferred_language", "zh");
     }
@@ -1366,12 +1491,51 @@ public class Setting {
             case null, default -> false;
         };
     }
-    public static String getSubtitleAssrtToken() {
-        return Prefers.getString("subtitle_assrt_token");
+    public static String getSubtitleSourceEnvironment() {
+        String environment = Prefers.getString("subtitle_source_environment");
+        if (!environment.isEmpty()) return environment;
+        String legacyToken = Prefers.getString("subtitle_assrt_token");
+        if (legacyToken.isEmpty()) return "";
+        JsonObject migrated = new JsonObject();
+        migrated.addProperty("ASSRT_TOKEN", legacyToken);
+        environment = migrated.toString();
+        Prefers.put("subtitle_source_environment", environment);
+        Prefers.put("subtitle_assrt_token", "");
+        return environment;
     }
 
-    public static void putSubtitleAssrtToken(String token) {
-        Prefers.put("subtitle_assrt_token", token);
+    public static void putSubtitleSourceEnvironment(String environment) {
+        Prefers.put("subtitle_source_environment", environment == null ? "" : environment.trim());
+    }
+
+    public static String getSubtitleSourceEnvironment(String sourceKey) {
+        if (sourceKey == null || sourceKey.trim().isEmpty()) return "";
+        try {
+            JsonObject root = com.google.gson.JsonParser.parseString(getSubtitleSourceEnvironment()).getAsJsonObject();
+            if (root.has(sourceKey) && root.get(sourceKey).isJsonObject()) return root.getAsJsonObject(sourceKey).toString();
+            if ("assrt".equals(sourceKey) && root.has("ASSRT_TOKEN")) {
+                JsonObject migrated = new JsonObject();
+                migrated.add("ASSRT_TOKEN", root.get("ASSRT_TOKEN").deepCopy());
+                return migrated.toString();
+            }
+        } catch (RuntimeException ignored) {
+        }
+        return "";
+    }
+
+    public static void putSubtitleSourceEnvironment(String sourceKey, String environment) {
+        if (sourceKey == null || sourceKey.trim().isEmpty()) return;
+        JsonObject root;
+        try {
+            root = com.google.gson.JsonParser.parseString(getSubtitleSourceEnvironment()).getAsJsonObject();
+        } catch (RuntimeException ignored) {
+            root = new JsonObject();
+        }
+        if ("assrt".equals(sourceKey)) root.remove("ASSRT_TOKEN");
+        String value = environment == null ? "" : environment.trim();
+        if (value.isEmpty()) root.remove(sourceKey);
+        else root.add(sourceKey, com.google.gson.JsonParser.parseString(value).getAsJsonObject());
+        putSubtitleSourceEnvironment(root.size() == 0 ? "" : root.toString());
     }
 
     public static int getSubtitleAiMaxConcurrency() {
